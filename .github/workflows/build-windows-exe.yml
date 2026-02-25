@@ -1,0 +1,33 @@
+# 在云端（GitHub 服务器）的 Windows 上打包 exe，无需本机有 Windows
+# 推送代码后自动运行，在 Actions 页面下载生成的 exe
+name: Build Windows exe
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:  # 允许在网页上手动触发
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install dependencies
+        run: |
+          pip install openpyxl pyinstaller
+
+      - name: Build exe
+        run: |
+          pyinstaller --onefile --windowed --name "表格解析建目录" --hidden-import=openpyxl main.py
+
+      - name: Upload exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: 表格解析建目录-exe
+          path: dist/表格解析建目录.exe

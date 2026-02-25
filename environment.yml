@@ -1,0 +1,9 @@
+# Conda 环境（仅 Excel 读取，无 OCR）
+name: file-mkdir
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  - tk
+  - openpyxl

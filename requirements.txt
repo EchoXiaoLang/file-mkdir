@@ -1,0 +1,5 @@
+# Excel 读取
+openpyxl>=3.1.0
+
+# 打包 exe 时使用（可选）
+# pyinstaller>=6.0.0
