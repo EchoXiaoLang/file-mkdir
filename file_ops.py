@@ -1,15 +1,18 @@
 # -*- coding: utf-8 -*-
 """
-按产品编号创建目录，并按客户编号从源目录复制文件夹/PDF 到 产品编号/YG。
+按产品编号创建目录，并按客户编号从源目录复制「名称包含客户编号」的压缩文件与 PDF 到 产品编号/YG。
 """
 from __future__ import annotations
 
 import os
 import shutil
 from pathlib import Path
-from typing import Callable, List, Tuple
+from typing import Callable, List
 
 from ocr_parser import extract_customer_id
+
+# 视为压缩文件的扩展名（客户型号破折号前数字在文件名中即匹配）
+ARCHIVE_EXTENSIONS = (".zip", ".rar", ".7z", ".tar.gz", ".tgz", ".tar")
 
 
 def ensure_product_folders(
@@ -40,72 +43,65 @@ def ensure_product_folders(
             log(f"[创建] {yg}")
 
 
-def _find_matching_dirs_and_pdfs(
-    source_dir: Path,
-    customer_id: str,
-) -> Tuple[List[Path], List[Path]]:
+def _is_archive(path: Path) -> bool:
+    """是否为支持的压缩文件。"""
+    name = path.name.lower()
+    return any(name.endswith(ext) for ext in ARCHIVE_EXTENSIONS)
+
+
+def _find_matching_archives(source_dir: Path, customer_id: str) -> List[Path]:
     """
-    递归遍历 source_dir 及其子目录，收集名称包含 customer_id 的文件夹和 PDF 文件路径。
-    返回 (匹配的文件夹列表, 匹配的 PDF 列表)。
+    递归遍历 source_dir 及其子目录，收集名称包含 customer_id 的压缩文件路径。
     """
     source_dir = Path(source_dir).resolve()
-    matching_dirs: List[Path] = []
-    matching_pdfs: List[Path] = []
-
-    for root, dirs, files in os.walk(source_dir):
+    matching: List[Path] = []
+    for root, _, files in os.walk(source_dir):
         root = Path(root)
-        for d in dirs:
-            if customer_id in d:
-                matching_dirs.append((root / d).resolve())
         for f in files:
-            if f.lower().endswith(".pdf") and customer_id in f:
-                matching_pdfs.append((root / f).resolve())
-    return matching_dirs, matching_pdfs
+            if customer_id not in f:
+                continue
+            p = (root / f).resolve()
+            if p.is_file() and _is_archive(p):
+                matching.append(p)
+    return matching
 
 
-def _topmost_dirs(dirs: List[Path]) -> List[Path]:
-    """只保留「最顶层」匹配文件夹：若 A 是 B 的父目录则只保留 A，避免重复复制。"""
-    dirs = list(set(dirs))
-    result: List[Path] = []
-    for d in dirs:
-        # d 是否位于其它任意匹配目录之下（即其它是 d 的祖先）
-        under_other = any(
-            t != d and len(d.parts) > len(t.parts) and d.parts[: len(t.parts)] == t.parts
-            for t in dirs
-        )
-        if not under_other:
-            result.append(d)
-    return result
-
-
-def _pdf_under_any(pdf: Path, dirs: List[Path]) -> bool:
-    """PDF 是否位于 dirs 中某个目录之下（复制该目录时已包含此 PDF）。"""
-    for t in dirs:
-        if len(pdf.parts) > len(t.parts) and pdf.parts[: len(t.parts)] == t.parts:
-            return True
-    return False
-
-
-def _yg_has_customer_folder_and_pdf(yg_dir: Path, customer_id: str) -> bool:
+def _find_matching_pdfs(source_dir: Path, customer_id: str) -> List[Path]:
     """
-    检查 YG 目录下是否同时存在「名称包含 customer_id 的文件夹」和「名称包含 customer_id 的 PDF」。
-    若都有则返回 True（可跳过复制）。
+    递归遍历 source_dir 及其子目录，收集名称包含 customer_id 的 PDF 文件路径。
+    """
+    source_dir = Path(source_dir).resolve()
+    matching: List[Path] = []
+    for root, _, files in os.walk(source_dir):
+        root = Path(root)
+        for f in files:
+            if customer_id not in f or not f.lower().endswith(".pdf"):
+                continue
+            p = (root / f).resolve()
+            if p.is_file():
+                matching.append(p)
+    return matching
+
+
+def _yg_has_customer_archive_and_pdf(yg_dir: Path, customer_id: str) -> bool:
+    """
+    检查 YG 目录下是否已同时存在名称包含 customer_id 的压缩文件和 PDF。若都有则返回 True（可跳过复制）。
     """
     yg_dir = Path(yg_dir)
     if not yg_dir.is_dir():
         return False
-    has_folder = False
+    has_archive = False
     has_pdf = False
     for item in yg_dir.iterdir():
-        if customer_id not in item.name:
+        if not item.is_file() or customer_id not in item.name:
             continue
-        if item.is_dir():
-            has_folder = True
-        elif item.is_file() and item.suffix.lower() == ".pdf":
+        if _is_archive(item):
+            has_archive = True
+        elif item.suffix.lower() == ".pdf":
             has_pdf = True
-        if has_folder and has_pdf:
+        if has_archive and has_pdf:
             return True
-    return has_folder and has_pdf
+    return has_archive and has_pdf
 
 
 def copy_customer_files_to_yg(
@@ -115,8 +111,8 @@ def copy_customer_files_to_yg(
     log: Callable[[str], None],
 ) -> None:
     """
-    在 source_dir 及其子目录中递归查找名称包含 customer_id 的文件夹和 PDF，
-    复制到 dest_yg_dir。若 YG 目录已存在且其中已有该客户的文件夹和 PDF，则跳过并记日志。
+    在 source_dir 及其子目录中递归查找名称包含 customer_id 的压缩文件与 PDF，
+    复制到 dest_yg_dir。若 YG 下已同时存在该客户的压缩文件和 PDF 则跳过。
     """
     source_dir = Path(source_dir).resolve()
     dest_yg_dir = Path(dest_yg_dir)
@@ -129,43 +125,36 @@ def copy_customer_files_to_yg(
         log(f"[错误] 源目录不存在: {source_dir}")
         return
 
-    # 若 YG 下已有该客户的文件夹和 PDF，则跳过复制
-    if _yg_has_customer_folder_and_pdf(dest_yg_dir, customer_id):
-        log(f"[跳过] {dest_yg_dir} 下已存在客户文件夹与客户PDF（客户编号 {customer_id}）")
+    if _yg_has_customer_archive_and_pdf(dest_yg_dir, customer_id):
+        log(f"[跳过] {dest_yg_dir} 下已存在客户压缩文件与客户PDF（客户编号 {customer_id}）")
         return
 
-    matching_dirs, matching_pdfs = _find_matching_dirs_and_pdfs(source_dir, customer_id)
-    topmost_dirs = _topmost_dirs(matching_dirs)
-    # 只复制不在「已复制文件夹」内的 PDF，避免重复
-    pdfs_to_copy = [p for p in matching_pdfs if not _pdf_under_any(p, topmost_dirs)]
-
+    archives = _find_matching_archives(source_dir, customer_id)
+    pdfs = _find_matching_pdfs(source_dir, customer_id)
     copied_any = False
-    for item in topmost_dirs:
-        if not item.is_dir():
-            continue
-        dest = dest_yg_dir / item.name
-        try:
-            if dest.exists():
-                shutil.rmtree(dest)
-            shutil.copytree(item, dest)
-            log(f"[复制] 文件夹 -> {dest_yg_dir.name}: {item.name} （来自 {item.parent}）")
-            copied_any = True
-        except Exception as e:
-            log(f"[错误] 复制失败 {item}: {e}")
-
-    for item in pdfs_to_copy:
+    for item in archives:
         if not item.is_file():
             continue
         dest = dest_yg_dir / item.name
         try:
             shutil.copy2(item, dest)
-            log(f"[复制] 文件 -> {dest_yg_dir.name}: {item.name} （来自 {item.parent}）")
+            log(f"[复制] 压缩文件 -> {dest_yg_dir.name}: {item.name} （来自 {item.parent}）")
+            copied_any = True
+        except Exception as e:
+            log(f"[错误] 复制失败 {item}: {e}")
+    for item in pdfs:
+        if not item.is_file():
+            continue
+        dest = dest_yg_dir / item.name
+        try:
+            shutil.copy2(item, dest)
+            log(f"[复制] PDF -> {dest_yg_dir.name}: {item.name} （来自 {item.parent}）")
             copied_any = True
         except Exception as e:
             log(f"[错误] 复制失败 {item}: {e}")
 
     if not copied_any:
-        log(f"[无匹配] 客户编号 {customer_id} 在源目录及子目录中未找到对应文件夹/PDF")
+        log(f"[无匹配] 客户编号 {customer_id} 在源目录及子目录中未找到对应压缩文件或PDF")
 
 
 def run_pipeline(
